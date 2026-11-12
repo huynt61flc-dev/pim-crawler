@@ -26,6 +26,29 @@ def save_config(config):
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
+def check_excel_file_locked(file_path):
+    """
+    Kiểm tra file Excel có đang bị mở bởi ứng dụng khác (như Microsoft Excel) hay không.
+    Nếu đang mở, nhắc người dùng đóng lại trước khi chạy để tránh lỗi ghi.
+    """
+    p = Path(file_path)
+    if not p.exists():
+        return
+    while True:
+        try:
+            with open(p, "a"):
+                pass
+            break
+        except PermissionError:
+            print("\n" + "=" * 65)
+            print(f"⚠️ CẢNH BÁO: File '{p.name}' đang mở trong Microsoft Excel!")
+            print("   Microsoft Excel đang khóa file này, bot sẽ không ghi dữ liệu được.")
+            print("   👉 Vui lòng ĐÓNG file Excel lại.")
+            print("=" * 65)
+            input("👉 Sau khi đã đóng file Excel, nhấn [ENTER] để tiếp tục: ")
+            time.sleep(0.5)
+
+
 def backup_excel(file_path):
     p = Path(file_path)
     if p.exists():
@@ -65,8 +88,8 @@ def choose_excel_file(config):
 def parse_product_name_from_drawer(raw_text):
     """
     Trích xuất từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
-    Ví dụ: '00051558 - KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50 50G Đã duyệt'
-           -> 'KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50 50G'
+    Ví dụ: '00006641 - KEM ĐÁNH RĂNG LÀM TRẮNG SENSODYNE GENTLE WHITENING 100G Đã duyệt'
+           -> 'KEM ĐÁNH RĂNG LÀM TRẮNG SENSODYNE GENTLE WHITENING 100G'
     """
     if not raw_text:
         return None
@@ -117,7 +140,7 @@ def close_drawer(page):
     time.sleep(1.0)
     try:
         page.keyboard.press("Escape")
-        time.sleep(1.0)
+        time.sleep(0.5)
     except Exception:
         pass
 
@@ -125,17 +148,17 @@ def close_drawer(page):
         close_btn = page.locator(".ant-drawer-close, button[aria-label='Close']").first
         if close_btn.is_visible(timeout=500):
             close_btn.click(force=True)
-            time.sleep(1.0)
+            time.sleep(0.5)
     except Exception:
         pass
 
 
 def crawl_single_product(page, code, config):
     """
-    Quy trình 3 bước chuẩn với độ trễ 1 giây giữa mỗi click để tránh lỗi:
-    1. Nhập mã tìm kiếm (nghỉ 1s).
-    2. Click vào Mã UPC (nghỉ 1s) -> Chuyển trang.
-    3. Click vào Tên SKU (nghỉ 1s) -> Mở bảng thông tin.
+    Quy trình 3 bước chuẩn:
+    1. Nhập mã tìm kiếm trên trang upc-list (nghỉ 1s).
+    2. Click dòng chữ bên dưới 'Mã UPC' (nghỉ 1s) -> Chuyển trang SKU.
+    3. Click dòng chữ bên dưới 'Tên SKU' tương ứng với mã (nghỉ 1s) -> Mở bảng thông tin.
     4. Trích xuất tên từ sau dấu '-' đến trước chữ 'Đã duyệt'.
     """
     upc_list_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
@@ -149,28 +172,25 @@ def crawl_single_product(page, code, config):
     search_box = page.locator(".ant-input-search input, input#term, input[placeholder*='Tìm']").first
     search_box.wait_for(state="visible", timeout=10000)
     
-    # Nghỉ 1s trước khi click ô tìm kiếm
     time.sleep(1.0)
     search_box.click(force=True)
-    
-    time.sleep(1.0)
+    time.sleep(0.5)
     search_box.fill("")
     search_box.fill(str(code))
     
-    # Nghỉ 1s trước khi nhấn Enter tìm kiếm
     time.sleep(1.0)
     search_box.press("Enter")
 
     try:
         search_btn = page.locator(".ant-input-search-button, button:has-text('Tìm')").first
         if search_btn.is_visible(timeout=500):
-            time.sleep(1.0)
+            time.sleep(0.5)
             search_btn.click()
     except Exception:
         pass
 
-    # Chờ kết quả tìm kiếm hiển thị
-    time.sleep(2.0)
+    # Chờ kết quả hiển thị
+    time.sleep(2.5)
 
     # 3. Bước 1: Tìm chỗ Mã UPC, click vào dòng chữ bên dưới Mã UPC
     upc_link = page.locator(".ant-table-tbody tr a, tbody tr td:nth-child(3) a, a.link").first
@@ -184,53 +204,44 @@ def crawl_single_product(page, code, config):
     upc_text = upc_link.inner_text().strip()
     print(f" -> Click Mã UPC ({upc_text})", end="", flush=True)
 
-    # Nghỉ 1 giây trước khi click Mã UPC
     time.sleep(1.0)
     upc_link.click()
 
-    # Chờ trang chuyển tiếp sang trang chi tiết SKU
+    # Chờ chuyển trang sang chi tiết SKU
     try:
         page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:
-        time.sleep(2.0)
+        time.sleep(2.5)
 
     # 4. Bước 2: Tìm chỗ Tên SKU, click vào dòng chữ bên dưới Tên SKU
-    time.sleep(1.0)
-    sku_text_el = None
+    time.sleep(1.5)
+    sku_row = page.locator("tr.ant-table-row").filter(has_text=code).first
+    if not sku_row.is_visible(timeout=3000):
+        sku_row = page.locator("tr.ant-table-row").first
 
-    sku_row = page.locator(".ant-table-tbody tr, tbody tr").filter(has_text=code).first
-    if not sku_row.is_visible(timeout=2000):
-        sku_row = page.locator(".ant-table-tbody tr, tbody tr").first
-
-    if sku_row.is_visible(timeout=3000):
-        cells = sku_row.locator("td").all()
-        for c in cells:
-            txt = c.inner_text().strip()
-            if len(txt) > 5 and not txt.isdigit() and "đã duyệt" not in txt.lower():
-                sku_text_el = c
-                break
-
-    if not sku_text_el or not sku_text_el.is_visible():
-        sku_text_el = page.locator(".table__td--name, td.truncate").first
-
-    if not sku_text_el or not sku_text_el.is_visible(timeout=3000):
-        sku_text_el = page.locator("tbody tr td:nth-child(4), tbody tr td:nth-child(3)").first
-
-    if not sku_text_el or not sku_text_el.is_visible(timeout=3000):
-        print(" [x Không thấy dòng chữ bên dưới Tên SKU]", end="", flush=True)
+    if not sku_row.is_visible(timeout=3000):
+        print(" [x Không thấy bảng SKU]", end="", flush=True)
         return None
 
-    print(" -> Click Tên SKU", end="", flush=True)
+    # Cột Tên SKU là ô thứ 4 (index 3) trong hàng
+    sku_cell = sku_row.locator("td").nth(3)
+    if not sku_cell.is_visible(timeout=3000):
+        sku_cell = sku_row.locator("td.truncate, .table__td--name").first
 
-    # Nghỉ 1 giây trước khi click Tên SKU
+    if not sku_cell.is_visible(timeout=3000):
+        print(" [x Không thấy ô Tên SKU]", end="", flush=True)
+        return None
+
+    print(f" -> Click Tên SKU ({sku_cell.inner_text().strip()[:35]}...)", end="", flush=True)
+
     time.sleep(1.0)
-    sku_text_el.click()
+    sku_cell.click()
 
-    # Nghỉ 1 giây sau khi click để bảng bên phải tải xong
-    time.sleep(1.5)
+    # Chờ bảng thông tin bên phải hiện ra
+    time.sleep(2.0)
 
     # 5. Bước 3: Sẽ hiện ra bảng thông tin bên phải (Right Drawer)
-    # Ở hàng đầu tiên của bảng: copy từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
+    # Ở hàng đầu tiên: copy từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
     right_drawer = page.locator(".ant-drawer-right .ant-drawer-content, .ant-drawer-content-wrapper, [role='dialog']").first
     extracted_name = None
     if right_drawer.is_visible(timeout=4000):
@@ -250,7 +261,6 @@ def crawl_single_product(page, code, config):
             except Exception:
                 continue
 
-    # Nghỉ 1s rồi đóng drawer trước khi chuyển sang mã tiếp theo
     time.sleep(1.0)
     close_drawer(page)
 
@@ -275,14 +285,14 @@ def run():
     print(f"[*] Độ trễ an toàn:  1 giây giữa mỗi click")
     print("-" * 65)
 
+    # Kiểm tra khóa file Excel
+    check_excel_file_locked(excel_path)
+
+    # Sao lưu an toàn
     backup_excel(excel_path)
 
     try:
         wb = openpyxl.load_workbook(excel_path)
-    except PermissionError:
-        print(f"\n[!] CẢNH BÁO: File '{excel_path.name}' đang mở trong Excel!")
-        print("    Vui lòng đóng file Excel lại rồi chạy lại bot.")
-        return
     except Exception as e:
         print(f"[!] Không thể mở file Excel: {e}")
         return
