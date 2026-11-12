@@ -65,8 +65,8 @@ def choose_excel_file(config):
 def parse_product_name_from_drawer(raw_text):
     """
     Trích xuất từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
-    Ví dụ: 'UPC: 745854124130 - KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50 Đã duyệt'
-           -> 'KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50'
+    Ví dụ: '00051558 - KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50 50G Đã duyệt'
+           -> 'KEM CHỐNG NẮNG DƯỠNG ẨM 2IN1 CETAPHIL DAILY DEFENSE CREAM SPF 50 50G'
     """
     if not raw_text:
         return None
@@ -95,13 +95,16 @@ def parse_product_name_from_drawer(raw_text):
 
 
 def wait_for_user_login(page):
+    """
+    Kiểm tra nếu đang ở trang đăng nhập, hướng dẫn người dùng đăng nhập tài khoản FPT + OTP.
+    """
     is_login_page = page.locator("input[name*='LoginInput'], button:has-text('Đăng nhập')").first.is_visible(timeout=3000)
     if is_login_page:
         print("\n" + "=" * 65)
         print("🔐 PHÁT HIỆN TRANG ĐĂNG NHẬP PIM (FPT RETAIL)")
         print("   1. Bạn hãy chuyển sang cửa sổ Chrome vừa mở.")
         print("   2. Nhập Tên đăng nhập, Mật khẩu và mã OTP 6 số.")
-        print("   3. Nhấn Đăng nhập để vào hệ thống PIM.")
+        print("   3. Nhấn nút Đăng nhập để vào hệ thống PIM.")
         print("   4. Khi đã vào được trang https://pim.frt.vn/product/upc-list,")
         print("   5. Quay lại đây và nhấn phím [ENTER] để bot bắt đầu cào dữ liệu.")
         print("=" * 65)
@@ -111,9 +114,6 @@ def wait_for_user_login(page):
 
 
 def close_drawer(page):
-    """
-    Đóng triệt để drawer và xóa bỏ mask che màn hình.
-    """
     try:
         page.keyboard.press("Escape")
         time.sleep(0.3)
@@ -128,28 +128,25 @@ def close_drawer(page):
     except Exception:
         pass
 
-    try:
-        # Nếu còn mask, nhấn Escape lần nữa
-        mask = page.locator(".ant-drawer-mask").first
-        if mask.is_visible(timeout=500):
-            page.keyboard.press("Escape")
-            time.sleep(0.3)
-    except Exception:
-        pass
-
 
 def crawl_single_product(page, code, config):
+    """
+    Quy trình 3 bước theo yêu cầu chuẩn:
+    1. Tìm mã sản phẩm trên trang upc-list.
+    2. Tìm chỗ 'Mã UPC', click vào dòng chữ bên dưới Mã UPC -> Chuyển trang chi tiết.
+    3. Tìm chỗ 'Tên SKU', click vào dòng chữ bên dưới Tên SKU -> Mở bảng thông tin.
+    4. Bảng thông tin: trích xuất dãy chữ từ sau dấu '-' đến trước chữ 'Đã duyệt'.
+    """
     upc_list_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
 
-    if "upc-list" not in page.url:
-        page.goto(upc_list_url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(1.5)
-
-    # 1. Đảm bảo đóng mọi drawer và mask cũ
+    # 1. Luôn quay về trang upc-list ban đầu
+    page.goto(upc_list_url, wait_until="domcontentloaded", timeout=30000)
+    time.sleep(1.5)
     close_drawer(page)
 
-    # 2. Nhập mã vào ô tìm kiếm
+    # 2. Tìm kiếm mã sản phẩm
     search_box = page.locator(".ant-input-search input, input#term, input[placeholder*='Tìm']").first
+    search_box.wait_for(state="visible", timeout=10000)
     search_box.click(force=True)
     search_box.fill("")
     search_box.fill(str(code))
@@ -165,29 +162,77 @@ def crawl_single_product(page, code, config):
 
     time.sleep(2.5)
 
-    # 3. Click vào ô Tên UPC (class table__td--name hoặc td.truncate)
-    upc_name_el = page.locator(".table__td--name, td.truncate").first
-    if not upc_name_el.is_visible(timeout=4000):
-        upc_name_el = page.locator("tbody tr td:nth-child(4)").first
+    # 3. Bước 1: Tìm chỗ Mã UPC, click vào dòng chữ bên dưới Mã UPC
+    upc_link = page.locator(".ant-table-tbody tr a, tbody tr td:nth-child(3) a, a.link").first
+    if not upc_link.is_visible(timeout=5000):
+        upc_link = page.locator("tbody tr a").first
 
-    if not upc_name_el.is_visible(timeout=3000):
+    if not upc_link.is_visible(timeout=3000):
+        print(" [x Không tìm thấy dòng chữ bên dưới Mã UPC]", end="", flush=True)
         return None
 
-    upc_name_el.click()
-    time.sleep(2)
+    upc_text = upc_link.inner_text().strip()
+    print(f" -> Click Mã UPC ({upc_text})", end="", flush=True)
+    upc_link.click()
 
-    # 4. Đọc bảng thông tin bên phải (Right Drawer)
+    # Chờ trang chuyển tiếp sang trang chi tiết SKU
+    try:
+        page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        time.sleep(2.5)
+
+    # 4. Bước 2: Tìm chỗ Tên SKU, click vào dòng chữ bên dưới Tên SKU
+    time.sleep(1.5)
+    sku_text_el = None
+
+    sku_row = page.locator(".ant-table-tbody tr, tbody tr").filter(has_text=code).first
+    if not sku_row.is_visible(timeout=2000):
+        sku_row = page.locator(".ant-table-tbody tr, tbody tr").first
+
+    if sku_row.is_visible(timeout=3000):
+        cells = sku_row.locator("td").all()
+        for c in cells:
+            txt = c.inner_text().strip()
+            if len(txt) > 5 and not txt.isdigit() and "đã duyệt" not in txt.lower():
+                sku_text_el = c
+                break
+
+    if not sku_text_el or not sku_text_el.is_visible():
+        sku_text_el = page.locator(".table__td--name, td.truncate").first
+
+    if not sku_text_el or not sku_text_el.is_visible(timeout=3000):
+        sku_text_el = page.locator("tbody tr td:nth-child(4), tbody tr td:nth-child(3)").first
+
+    if not sku_text_el or not sku_text_el.is_visible(timeout=3000):
+        print(" [x Không thấy dòng chữ bên dưới Tên SKU]", end="", flush=True)
+        return None
+
+    print(" -> Click Tên SKU", end="", flush=True)
+    sku_text_el.click()
+    time.sleep(2.5)
+
+    # 5. Bước 3: Sẽ hiện ra bảng thông tin bên phải (Right Drawer)
+    # Ở hàng đầu tiên của bảng: copy từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
+    right_drawer = page.locator(".ant-drawer-right .ant-drawer-content, .ant-drawer-content-wrapper, [role='dialog']").first
     extracted_name = None
-    right_drawer = page.locator(".ant-drawer-right .ant-drawer-content, .ant-drawer-content-wrapper").first
     if right_drawer.is_visible(timeout=4000):
         drawer_txt = right_drawer.inner_text()
         extracted_name = parse_product_name_from_drawer(drawer_txt)
 
     if not extracted_name:
-        raw = upc_name_el.inner_text().strip()
-        extracted_name = raw if raw else None
+        candidates = page.locator(".ant-drawer-header, .ant-drawer-title, h1, h2, h3, h4, div").all()
+        for cand in candidates:
+            try:
+                t = cand.inner_text().strip()
+                if "-" in t and ("duyệt" in t.lower() or "đã duyệt" in t.lower()):
+                    res = parse_product_name_from_drawer(t)
+                    if res:
+                        extracted_name = res
+                        break
+            except Exception:
+                continue
 
-    # 5. Đóng drawer ngay sau khi lấy xong
+    # Đóng drawer trước khi chuyển sang mã tiếp theo
     close_drawer(page)
 
     return extracted_name
