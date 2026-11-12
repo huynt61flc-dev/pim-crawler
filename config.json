@@ -1,0 +1,11 @@
+{
+  "data_source": "excel",
+  "excel_path": "sample_input.xlsx",
+  "sheet_name": "",
+  "start_row": 2,
+  "code_column": "B",
+  "result_column": "C",
+  "pim_url": "https://pim.frt.vn/product/upc-list",
+  "headless": false,
+  "request_delay_seconds": 1.5
+}

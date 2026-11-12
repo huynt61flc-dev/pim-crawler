@@ -1,0 +1,18 @@
+# Browser session & credentials (QUAN TRỌNG: không đẩy cookies/token lên GitHub)
+browser_profile/
+
+# Python cache & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Excel backups & temporary lock files
+*_backup_*.xlsx
+~$*.xlsx
+
+# OS generated files
+.DS_Store
+Thumbs.db
