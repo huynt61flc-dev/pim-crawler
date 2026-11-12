@@ -27,10 +27,6 @@ def save_config(config):
 
 
 def check_excel_file_locked(file_path):
-    """
-    Kiểm tra file Excel có đang bị mở bởi ứng dụng khác (như Microsoft Excel) hay không.
-    Nếu đang mở, nhắc người dùng đóng lại trước khi chạy để tránh lỗi ghi.
-    """
     p = Path(file_path)
     if not p.exists():
         return
@@ -85,42 +81,59 @@ def choose_excel_file(config):
     return None
 
 
-def parse_product_name_from_drawer(raw_text):
+def extract_fields_from_drawer(raw_text):
     """
-    Trích xuất từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
-    Ví dụ: '00006641 - KEM ĐÁNH RĂNG LÀM TRẮNG SENSODYNE GENTLE WHITENING 100G Đã duyệt'
-           -> 'KEM ĐÁNH RĂNG LÀM TRẮNG SENSODYNE GENTLE WHITENING 100G'
+    Trích xuất:
+    1. Tên sản phẩm: từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
+    2. Ngành hàng: dòng sau chữ 'Ngành hàng'
+    3. Loại hàng: dòng sau chữ 'Loại hàng'
     """
+    data = {
+        "name": None,
+        "nganh_hang": None,
+        "loai_hang": None
+    }
     if not raw_text:
-        return None
+        return data
 
-    # 1. Regex chính xác
+    # 1. Tên sản phẩm
     match = re.search(r"-\s*(.*?)\s*(?:Đã\s*duyệt|đã\s*duyệt|ĐÃ\s*DUYỆT)", raw_text, re.DOTALL | re.IGNORECASE)
     if match:
         name = match.group(1).strip()
         name = " ".join(name.split())
         if len(name) > 1:
-            return name
+            data["name"] = name
+    else:
+        text = raw_text
+        if "-" in text:
+            text = text.split("-", 1)[1]
+        for marker in ["Đã duyệt", "đã duyệt", "ĐÃ DUYỆT", "Da duyet", "da duyet"]:
+            idx = text.lower().find(marker.lower())
+            if idx != -1:
+                text = text[:idx]
+                break
+        name = " ".join(text.split()).strip()
+        if len(name) > 1:
+            data["name"] = name
 
-    # 2. Fallback tách chuỗi
-    text = raw_text
-    if "-" in text:
-        text = text.split("-", 1)[1]
+    # 2. Ngành hàng
+    m_nganh = re.search(r"Ngành\s*hàng[:\s*\n\r]+([^\n\r]+)", raw_text, re.IGNORECASE)
+    if m_nganh:
+        val = m_nganh.group(1).strip()
+        if val and val != "--":
+            data["nganh_hang"] = val
 
-    for marker in ["Đã duyệt", "đã duyệt", "ĐÃ DUYỆT", "Da duyet", "da duyet"]:
-        idx = text.lower().find(marker.lower())
-        if idx != -1:
-            text = text[:idx]
-            break
+    # 3. Loại hàng (tránh trùng 'Loại hàng hiển thị')
+    m_loai = re.search(r"(?:^|\n)\s*Loại\s*hàng(?!\s*hiển\s*thị)[:\s*\n\r]+([^\n\r]+)", raw_text, re.IGNORECASE)
+    if m_loai:
+        val = m_loai.group(1).strip()
+        if val and val != "--":
+            data["loai_hang"] = val
 
-    name = " ".join(text.split()).strip()
-    return name if len(name) > 1 else None
+    return data
 
 
 def wait_for_user_login(page):
-    """
-    Kiểm tra nếu đang ở trang đăng nhập, hướng dẫn người dùng đăng nhập tài khoản FPT + OTP.
-    """
     is_login_page = page.locator("input[name*='LoginInput'], button:has-text('Đăng nhập')").first.is_visible(timeout=3000)
     if is_login_page:
         print("\n" + "=" * 65)
@@ -155,11 +168,11 @@ def close_drawer(page):
 
 def crawl_single_product(page, code, config):
     """
-    Quy trình 3 bước chuẩn:
+    Quy trình:
     1. Nhập mã tìm kiếm trên trang upc-list (nghỉ 1s).
     2. Click dòng chữ bên dưới 'Mã UPC' (nghỉ 1s) -> Chuyển trang SKU.
-    3. Click dòng chữ bên dưới 'Tên SKU' tương ứng với mã (nghỉ 1s) -> Mở bảng thông tin.
-    4. Trích xuất tên từ sau dấu '-' đến trước chữ 'Đã duyệt'.
+    3. Click dòng chữ bên dưới 'Tên SKU' tương ứng (nghỉ 1s) -> Mở bảng thông tin.
+    4. Trích xuất: Tên sản phẩm, Ngành hàng, Loại hàng.
     """
     upc_list_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
 
@@ -189,7 +202,6 @@ def crawl_single_product(page, code, config):
     except Exception:
         pass
 
-    # Chờ kết quả hiển thị
     time.sleep(2.5)
 
     # 3. Bước 1: Tìm chỗ Mã UPC, click vào dòng chữ bên dưới Mã UPC
@@ -198,7 +210,7 @@ def crawl_single_product(page, code, config):
         upc_link = page.locator("tbody tr a").first
 
     if not upc_link.is_visible(timeout=3000):
-        print(" [x Không tìm thấy dòng chữ bên dưới Mã UPC]", end="", flush=True)
+        print(" [x Không thấy dòng chữ bên dưới Mã UPC]", end="", flush=True)
         return None
 
     upc_text = upc_link.inner_text().strip()
@@ -223,7 +235,6 @@ def crawl_single_product(page, code, config):
         print(" [x Không thấy bảng SKU]", end="", flush=True)
         return None
 
-    # Cột Tên SKU là ô thứ 4 (index 3) trong hàng
     sku_cell = sku_row.locator("td").nth(3)
     if not sku_cell.is_visible(timeout=3000):
         sku_cell = sku_row.locator("td.truncate, .table__td--name").first
@@ -232,31 +243,30 @@ def crawl_single_product(page, code, config):
         print(" [x Không thấy ô Tên SKU]", end="", flush=True)
         return None
 
-    print(f" -> Click Tên SKU ({sku_cell.inner_text().strip()[:35]}...)", end="", flush=True)
+    print(f" -> Click Tên SKU ({sku_cell.inner_text().strip()[:30]}...)", end="", flush=True)
 
     time.sleep(1.0)
     sku_cell.click()
 
-    # Chờ bảng thông tin bên phải hiện ra
     time.sleep(2.0)
 
     # 5. Bước 3: Sẽ hiện ra bảng thông tin bên phải (Right Drawer)
-    # Ở hàng đầu tiên: copy từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
     right_drawer = page.locator(".ant-drawer-right .ant-drawer-content, .ant-drawer-content-wrapper, [role='dialog']").first
-    extracted_name = None
+    data = {"name": None, "nganh_hang": None, "loai_hang": None}
+
     if right_drawer.is_visible(timeout=4000):
         drawer_txt = right_drawer.inner_text()
-        extracted_name = parse_product_name_from_drawer(drawer_txt)
+        data = extract_fields_from_drawer(drawer_txt)
 
-    if not extracted_name:
+    if not data["name"]:
         candidates = page.locator(".ant-drawer-header, .ant-drawer-title, h1, h2, h3, h4, div").all()
         for cand in candidates:
             try:
                 t = cand.inner_text().strip()
                 if "-" in t and ("duyệt" in t.lower() or "đã duyệt" in t.lower()):
-                    res = parse_product_name_from_drawer(t)
-                    if res:
-                        extracted_name = res
+                    d_sub = extract_fields_from_drawer(t)
+                    if d_sub["name"]:
+                        data["name"] = d_sub["name"]
                         break
             except Exception:
                 continue
@@ -264,7 +274,7 @@ def crawl_single_product(page, code, config):
     time.sleep(1.0)
     close_drawer(page)
 
-    return extracted_name
+    return data
 
 
 def run():
@@ -278,17 +288,25 @@ def run():
         print("[!] Không có file Excel để xử lý.")
         return
 
+    code_col = config.get("code_column", "B").upper()
+    name_col = config.get("name_column", "C").upper()
+    nganh_col = config.get("nganh_hang_column", "D").upper()
+    loai_col = config.get("loai_hang_column", "E").upper()
+    start_row = int(config.get("start_row", 2))
+    pim_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
+    delay = float(config.get("request_delay_seconds", 1.0))
+
     print(f"\n[*] File Excel: {excel_path.resolve()}")
-    print(f"[*] Cột mã sản phẩm: Cột {config.get('code_column', 'B')}")
-    print(f"[*] Cột kết quả ghi: Cột {config.get('result_column', 'C')}")
-    print(f"[*] Link xuất phát:  {config.get('pim_url', 'https://pim.frt.vn/product/upc-list')}")
+    print(f"[*] Cột mã sản phẩm: Cột {code_col}")
+    print(f"[*] Cột kết quả ghi:")
+    print(f"    - Cột {name_col}: Tên sản phẩm")
+    print(f"    - Cột {nganh_col}: Ngành hàng")
+    print(f"    - Cột {loai_col}: Loại hàng")
+    print(f"[*] Link xuất phát:  {pim_url}")
     print(f"[*] Độ trễ an toàn:  1 giây giữa mỗi click")
     print("-" * 65)
 
-    # Kiểm tra khóa file Excel
     check_excel_file_locked(excel_path)
-
-    # Sao lưu an toàn
     backup_excel(excel_path)
 
     try:
@@ -301,11 +319,11 @@ def run():
     ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
     print(f"[*] Đang làm việc trên Sheet: '{ws.title}'")
 
-    code_col = config.get("code_column", "B").upper()
-    result_col = config.get("result_column", "C").upper()
-    start_row = int(config.get("start_row", 2))
-    pim_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
-    delay = float(config.get("request_delay_seconds", 1.0))
+    # Tự động tạo tiêu đề nếu cột D và E chưa có
+    if not ws[f"{nganh_col}1"].value:
+        ws[f"{nganh_col}1"] = "Ngành hàng"
+    if not ws[f"{loai_col}1"].value:
+        ws[f"{loai_col}1"] = "Loại hàng"
 
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -338,7 +356,9 @@ def run():
 
         for row_idx in range(start_row, total_rows + 1):
             code_cell = ws[f"{code_col}{row_idx}"]
-            result_cell = ws[f"{result_col}{row_idx}"]
+            name_cell = ws[f"{name_col}{row_idx}"]
+            nganh_cell = ws[f"{nganh_col}{row_idx}"]
+            loai_cell = ws[f"{loai_col}{row_idx}"]
 
             code = code_cell.value
             if code is None or str(code).strip() == "":
@@ -348,23 +368,36 @@ def run():
             if code_str.endswith(".0") and code_str[:-2].isdigit():
                 code_str = code_str[:-2]
 
-            current_result = result_cell.value
-            if current_result and str(current_result).strip() != "" and str(current_result).strip() != "Trang chủ":
-                print(f"[=] Hàng {row_idx:3d}: Mã {code_str:<12} -> Đã có tên: '{current_result}', bỏ qua.")
+            # Bỏ qua nếu đã có đầy đủ Tên, Ngành hàng, Loại hàng
+            has_name = name_cell.value and str(name_cell.value).strip() != "" and str(name_cell.value).strip() != "Trang chủ"
+            has_nganh = nganh_cell.value and str(nganh_cell.value).strip() != ""
+            has_loai = loai_cell.value and str(loai_cell.value).strip() != ""
+
+            if has_name and has_nganh and has_loai:
+                print(f"[=] Hàng {row_idx:3d}: Mã {code_str:<12} -> Đã đủ thông tin, bỏ qua.")
                 skip_count += 1
                 continue
 
             print(f"[*] Hàng {row_idx:3d}: Mã {code_str:<12}", end="", flush=True)
 
             try:
-                product_name = crawl_single_product(page, code_str, config)
+                data = crawl_single_product(page, code_str, config)
             except Exception as e:
                 print(f" [Lỗi: {e}]", end="")
-                product_name = None
+                data = None
 
-            if product_name:
-                result_cell.value = product_name
-                print(f" -> [✓] TÊN: '{product_name}'")
+            if data and data.get("name"):
+                name_val = data["name"]
+                nganh_val = data.get("nganh_hang", "")
+                loai_val = data.get("loai_hang", "")
+
+                name_cell.value = name_val
+                if nganh_val:
+                    nganh_cell.value = nganh_val
+                if loai_val:
+                    loai_cell.value = loai_val
+
+                print(f" -> [✓] TÊN: '{name_val}' | NGÀNH: '{nganh_val}' | LOẠI: '{loai_val}'")
                 success_count += 1
             else:
                 print(f" -> [x] Không tìm thấy")
