@@ -81,10 +81,12 @@ def choose_excel_file(config):
     return None
 
 
-def extract_fields_from_drawer(raw_text):
+def extract_fields_from_drawer(raw_text, fallback_name=None):
     """
     Trích xuất:
-    1. Tên sản phẩm: từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
+    1. Tên sản phẩm:
+       - Nếu có dạng: [Mã] - [Tên] Đã duyệt -> lấy phần Tên
+       - Nếu là Chờ duyệt hoặc không có chuỗi giữa '-' và 'Đã duyệt' -> dùng fallback_name từ ô Tên SKU
     2. Ngành hàng: dòng sau chữ 'Ngành hàng'
     3. Loại hàng: dòng sau chữ 'Loại hàng'
     """
@@ -94,27 +96,17 @@ def extract_fields_from_drawer(raw_text):
         "loai_hang": None
     }
     if not raw_text:
+        data["name"] = fallback_name
         return data
 
     # 1. Tên sản phẩm
     match = re.search(r"-\s*(.*?)\s*(?:Đã\s*duyệt|đã\s*duyệt|ĐÃ\s*DUYỆT)", raw_text, re.DOTALL | re.IGNORECASE)
-    if match:
-        name = match.group(1).strip()
-        name = " ".join(name.split())
-        if len(name) > 1:
-            data["name"] = name
-    else:
-        text = raw_text
-        if "-" in text:
-            text = text.split("-", 1)[1]
-        for marker in ["Đã duyệt", "đã duyệt", "ĐÃ DUYỆT", "Da duyet", "da duyet"]:
-            idx = text.lower().find(marker.lower())
-            if idx != -1:
-                text = text[:idx]
-                break
-        name = " ".join(text.split()).strip()
-        if len(name) > 1:
-            data["name"] = name
+    if match and len(match.group(1).strip()) > 1:
+        clean_name = " ".join(match.group(1).strip().split())
+        data["name"] = clean_name
+    elif fallback_name and len(fallback_name.strip()) > 1:
+        # Nếu trạng thái là Chờ duyệt hoặc không có tên ở tiêu đề drawer
+        data["name"] = fallback_name.strip()
 
     # 2. Ngành hàng
     m_nganh = re.search(r"Ngành\s*hàng[:\s*\n\r]+([^\n\r]+)", raw_text, re.IGNORECASE)
@@ -235,6 +227,7 @@ def crawl_single_product(page, code, config):
         print(" [x Không thấy bảng SKU]", end="", flush=True)
         return None
 
+    # Cột Tên SKU là ô thứ 4 (index 3) trong hàng
     sku_cell = sku_row.locator("td").nth(3)
     if not sku_cell.is_visible(timeout=3000):
         sku_cell = sku_row.locator("td.truncate, .table__td--name").first
@@ -243,7 +236,8 @@ def crawl_single_product(page, code, config):
         print(" [x Không thấy ô Tên SKU]", end="", flush=True)
         return None
 
-    print(f" -> Click Tên SKU ({sku_cell.inner_text().strip()[:30]}...)", end="", flush=True)
+    sku_text = sku_cell.inner_text().strip()
+    print(f" -> Click Tên SKU ({sku_text[:30]}...)", end="", flush=True)
 
     time.sleep(1.0)
     sku_cell.click()
@@ -256,20 +250,10 @@ def crawl_single_product(page, code, config):
 
     if right_drawer.is_visible(timeout=4000):
         drawer_txt = right_drawer.inner_text()
-        data = extract_fields_from_drawer(drawer_txt)
-
-    if not data["name"]:
-        candidates = page.locator(".ant-drawer-header, .ant-drawer-title, h1, h2, h3, h4, div").all()
-        for cand in candidates:
-            try:
-                t = cand.inner_text().strip()
-                if "-" in t and ("duyệt" in t.lower() or "đã duyệt" in t.lower()):
-                    d_sub = extract_fields_from_drawer(t)
-                    if d_sub["name"]:
-                        data["name"] = d_sub["name"]
-                        break
-            except Exception:
-                continue
+        data = extract_fields_from_drawer(drawer_txt, fallback_name=sku_text)
+    else:
+        # Nếu không mở drawer được, dùng fallback từ chính ô SKU
+        data["name"] = sku_text
 
     time.sleep(1.0)
     close_drawer(page)
@@ -319,7 +303,6 @@ def run():
     ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
     print(f"[*] Đang làm việc trên Sheet: '{ws.title}'")
 
-    # Tự động tạo tiêu đề nếu cột D và E chưa có
     if not ws[f"{nganh_col}1"].value:
         ws[f"{nganh_col}1"] = "Ngành hàng"
     if not ws[f"{loai_col}1"].value:
@@ -368,8 +351,7 @@ def run():
             if code_str.endswith(".0") and code_str[:-2].isdigit():
                 code_str = code_str[:-2]
 
-            # Bỏ qua nếu đã có đầy đủ Tên, Ngành hàng, Loại hàng
-            has_name = name_cell.value and str(name_cell.value).strip() != "" and str(name_cell.value).strip() != "Trang chủ"
+            has_name = name_cell.value and str(name_cell.value).strip() != "" and "UPC:" not in str(name_cell.value)
             has_nganh = nganh_cell.value and str(nganh_cell.value).strip() != ""
             has_loai = loai_cell.value and str(loai_cell.value).strip() != ""
 
@@ -397,7 +379,7 @@ def run():
                 if loai_val:
                     loai_cell.value = loai_val
 
-                print(f" -> [✓] TÊN: '{name_val}' | NGÀNH: '{nganh_val}' | LOẠI: '{loai_val}'")
+                print(f" -> [✓] TÊN: '{name_val[:30]}...' | NGÀNH: '{nganh_val}' | LOẠI: '{loai_val}'")
                 success_count += 1
             else:
                 print(f" -> [x] Không tìm thấy")
