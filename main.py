@@ -114,9 +114,10 @@ def wait_for_user_login(page):
 
 
 def close_drawer(page):
+    time.sleep(1.0)
     try:
         page.keyboard.press("Escape")
-        time.sleep(0.3)
+        time.sleep(1.0)
     except Exception:
         pass
 
@@ -124,43 +125,52 @@ def close_drawer(page):
         close_btn = page.locator(".ant-drawer-close, button[aria-label='Close']").first
         if close_btn.is_visible(timeout=500):
             close_btn.click(force=True)
-            time.sleep(0.3)
+            time.sleep(1.0)
     except Exception:
         pass
 
 
 def crawl_single_product(page, code, config):
     """
-    Quy trình 3 bước theo yêu cầu chuẩn:
-    1. Tìm mã sản phẩm trên trang upc-list.
-    2. Tìm chỗ 'Mã UPC', click vào dòng chữ bên dưới Mã UPC -> Chuyển trang chi tiết.
-    3. Tìm chỗ 'Tên SKU', click vào dòng chữ bên dưới Tên SKU -> Mở bảng thông tin.
-    4. Bảng thông tin: trích xuất dãy chữ từ sau dấu '-' đến trước chữ 'Đã duyệt'.
+    Quy trình 3 bước chuẩn với độ trễ 1 giây giữa mỗi click để tránh lỗi:
+    1. Nhập mã tìm kiếm (nghỉ 1s).
+    2. Click vào Mã UPC (nghỉ 1s) -> Chuyển trang.
+    3. Click vào Tên SKU (nghỉ 1s) -> Mở bảng thông tin.
+    4. Trích xuất tên từ sau dấu '-' đến trước chữ 'Đã duyệt'.
     """
     upc_list_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
 
     # 1. Luôn quay về trang upc-list ban đầu
     page.goto(upc_list_url, wait_until="domcontentloaded", timeout=30000)
-    time.sleep(1.5)
+    time.sleep(1.0)
     close_drawer(page)
 
     # 2. Tìm kiếm mã sản phẩm
     search_box = page.locator(".ant-input-search input, input#term, input[placeholder*='Tìm']").first
     search_box.wait_for(state="visible", timeout=10000)
+    
+    # Nghỉ 1s trước khi click ô tìm kiếm
+    time.sleep(1.0)
     search_box.click(force=True)
+    
+    time.sleep(1.0)
     search_box.fill("")
     search_box.fill(str(code))
-    time.sleep(0.3)
+    
+    # Nghỉ 1s trước khi nhấn Enter tìm kiếm
+    time.sleep(1.0)
     search_box.press("Enter")
 
     try:
         search_btn = page.locator(".ant-input-search-button, button:has-text('Tìm')").first
         if search_btn.is_visible(timeout=500):
+            time.sleep(1.0)
             search_btn.click()
     except Exception:
         pass
 
-    time.sleep(2.5)
+    # Chờ kết quả tìm kiếm hiển thị
+    time.sleep(2.0)
 
     # 3. Bước 1: Tìm chỗ Mã UPC, click vào dòng chữ bên dưới Mã UPC
     upc_link = page.locator(".ant-table-tbody tr a, tbody tr td:nth-child(3) a, a.link").first
@@ -173,16 +183,19 @@ def crawl_single_product(page, code, config):
 
     upc_text = upc_link.inner_text().strip()
     print(f" -> Click Mã UPC ({upc_text})", end="", flush=True)
+
+    # Nghỉ 1 giây trước khi click Mã UPC
+    time.sleep(1.0)
     upc_link.click()
 
     # Chờ trang chuyển tiếp sang trang chi tiết SKU
     try:
         page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:
-        time.sleep(2.5)
+        time.sleep(2.0)
 
     # 4. Bước 2: Tìm chỗ Tên SKU, click vào dòng chữ bên dưới Tên SKU
-    time.sleep(1.5)
+    time.sleep(1.0)
     sku_text_el = None
 
     sku_row = page.locator(".ant-table-tbody tr, tbody tr").filter(has_text=code).first
@@ -208,8 +221,13 @@ def crawl_single_product(page, code, config):
         return None
 
     print(" -> Click Tên SKU", end="", flush=True)
+
+    # Nghỉ 1 giây trước khi click Tên SKU
+    time.sleep(1.0)
     sku_text_el.click()
-    time.sleep(2.5)
+
+    # Nghỉ 1 giây sau khi click để bảng bên phải tải xong
+    time.sleep(1.5)
 
     # 5. Bước 3: Sẽ hiện ra bảng thông tin bên phải (Right Drawer)
     # Ở hàng đầu tiên của bảng: copy từ sau dấu '-' cho đến trước chữ 'Đã duyệt'
@@ -232,7 +250,8 @@ def crawl_single_product(page, code, config):
             except Exception:
                 continue
 
-    # Đóng drawer trước khi chuyển sang mã tiếp theo
+    # Nghỉ 1s rồi đóng drawer trước khi chuyển sang mã tiếp theo
+    time.sleep(1.0)
     close_drawer(page)
 
     return extracted_name
@@ -253,6 +272,7 @@ def run():
     print(f"[*] Cột mã sản phẩm: Cột {config.get('code_column', 'B')}")
     print(f"[*] Cột kết quả ghi: Cột {config.get('result_column', 'C')}")
     print(f"[*] Link xuất phát:  {config.get('pim_url', 'https://pim.frt.vn/product/upc-list')}")
+    print(f"[*] Độ trễ an toàn:  1 giây giữa mỗi click")
     print("-" * 65)
 
     backup_excel(excel_path)
@@ -275,7 +295,7 @@ def run():
     result_col = config.get("result_column", "C").upper()
     start_row = int(config.get("start_row", 2))
     pim_url = config.get("pim_url", "https://pim.frt.vn/product/upc-list")
-    delay = float(config.get("request_delay_seconds", 1.5))
+    delay = float(config.get("request_delay_seconds", 1.0))
 
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
